@@ -1,22 +1,30 @@
+# flow.py
 from prefect import flow, task
 import yfinance as yf
 import pandas as pd
-import numpy as np
 from ta.momentum import RSIIndicator
 from ta.trend import SMAIndicator
 from telegram import Bot
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TICKER
 
+
 @task
 def get_data(ticker: str):
-    data = yf.download(ticker, period="1y", interval="1h")
+    # ✅ Ajuste: periodo e intervalo compatibles con datos horarios
+    data = yf.download(ticker, period="60d", interval="1h")
+
+    # Validación para evitar el error "No objects to concatenate"
+    if data.empty:
+        raise ValueError(f"No se obtuvieron datos para el ticker {ticker}.")
     return data
+
 
 @task
 def calculate_indicators(data: pd.DataFrame):
     data["RSI"] = RSIIndicator(data["Close"], window=14).rsi()
     data["MA200"] = SMAIndicator(data["Close"], window=200).sma_indicator()
     return data
+
 
 @task
 def analyze(data: pd.DataFrame):
@@ -26,6 +34,7 @@ def analyze(data: pd.DataFrame):
     ma200 = last_row["MA200"]
     distance = round(((close - ma200) / ma200) * 100, 2)
     return rsi, distance, close, ma200
+
 
 @task
 def send_telegram_message(rsi, distance, close, ma200):
@@ -39,6 +48,7 @@ def send_telegram_message(rsi, distance, close, ma200):
     )
     bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
 
+
 @flow
 def rsi_monitor():
     data = get_data(TICKER)
@@ -46,5 +56,7 @@ def rsi_monitor():
     rsi, distance, close, ma200 = analyze(data)
     send_telegram_message(rsi, distance, close, ma200)
 
+
 if __name__ == "__main__":
     rsi_monitor()
+
