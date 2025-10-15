@@ -1,0 +1,7 @@
+prefect
+yfinance
+pandas
+numpy
+ta
+python-telegram-bot
+
