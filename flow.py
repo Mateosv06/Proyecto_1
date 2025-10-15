@@ -3,33 +3,54 @@ import yfinance as yf
 import pandas as pd
 from ta.momentum import RSIIndicator
 from ta.trend import SMAIndicator
+import asyncio
 from telegram import Bot
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TICKER
 import time
+import os
 
 # ==================== TAREAS ====================
 
 @task
 def get_data(ticker: str):
     print(f"📥 Descargando datos para {ticker}...")
-    data = yf.download(ticker, period="60d", interval="1h")
 
-    # Si tiene columnas multinivel (por ejemplo ('Close','AAPL')), las aplanamos
+    try:
+        data = yf.download(ticker, period="60d", interval="1h", progress=False)
+        if data.empty:
+            print("⚠️ No se recibieron datos con intervalo 1h. Intentando con 1d...")
+            data = yf.download(ticker, period="60d", interval="1d", progress=False)
+        if data.empty:
+            raise ValueError("No se pudo obtener datos para el ticker especificado.")
+    except Exception as e:
+        print(f"❌ Error descargando datos: {e}")
+        return pd.DataFrame()
+
+    # Aplanar columnas si vienen multinivel
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = [col[0] for col in data.columns]
 
     # Convertir todo a float
-    data = data.astype(float)
+    try:
+        data = data.astype(float)
+    except Exception:
+        pass
+
+    print(f"✅ Datos descargados correctamente ({len(data)} filas).")
     return data
 
 
 @task
 def calculate_indicators(data: pd.DataFrame):
     print("📊 Calculando RSI y medias móviles...")
-    close_series = data["Close"].squeeze()  # Garantiza que sea Serie 1D
 
+    if data.empty:
+        raise ValueError("No hay datos para calcular indicadores.")
+
+    close_series = data["Close"].squeeze()
     data["RSI"] = RSIIndicator(close_series, window=14).rsi()
     data["MA200"] = SMAIndicator(close_series, window=200).sma_indicator()
+
     return data
 
 
@@ -41,7 +62,7 @@ def check_signals(data: pd.DataFrame):
     last_price = float(data["Close"].iloc[-1])
     ma200 = float(data["MA200"].iloc[-1])
 
-    print(f"Último RSI: {last_rsi:.2f} | Precio actual: {last_price:.2f}")
+    print(f"Último RSI: {last_rsi:.2f} | Precio actual: {last_price:.2f} | MA200: {ma200:.2f}")
 
     if last_rsi < 30 and last_price > ma200:
         signal = "🟢 Posible *compra* (RSI < 30 y precio > MA200)"
@@ -53,11 +74,7 @@ def check_signals(data: pd.DataFrame):
 
 
 @task
-@task
 def send_telegram_message(signal, rsi, price, ma200):
-    from telegram import Bot
-    import asyncio
-
     async def main():
         bot = Bot(token=TELEGRAM_TOKEN)
         message = (
@@ -76,14 +93,17 @@ def send_telegram_message(signal, rsi, price, ma200):
         print(f"⚠️ Error enviando mensaje a Telegram: {e}")
 
 
-
 # ==================== FLUJO PRINCIPAL ====================
 
 @flow
 def rsi_monitor():
     print("🚀 Iniciando monitoreo RSI...")
+    print(f"🔍 Ticker desde config.py: {TICKER}")
     try:
         data = get_data(TICKER)
+        if data.empty:
+            print("⚠️ No se pudieron descargar datos. Saltando ejecución.")
+            return
         data = calculate_indicators(data)
         signal, rsi, price, ma200 = check_signals(data)
         send_telegram_message(signal, rsi, price, ma200)
@@ -98,3 +118,5 @@ if __name__ == "__main__":
         rsi_monitor()
         print("⏱ Esperando 1 hora para próxima ejecución...\n")
         time.sleep(3600)
+
+
